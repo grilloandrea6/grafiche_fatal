@@ -1,14 +1,21 @@
 import { noise2D } from "@remotion/noise";
 import { AbsoluteFill, Easing, interpolate, useCurrentFrame } from "remotion";
 import { useId, type ReactNode } from "react";
-import { config as c, height, width, SCALE } from "../config";
+import {
+  config as c,
+  height,
+  width,
+  SCALE,
+  HALATION_BLUR,
+  HALATION_OPACITY,
+} from "../config";
 type Layer = { children: ReactNode };
 const clamp = { extrapolateLeft: "clamp", extrapolateRight: "clamp" } as const;
 export const ramp = (frame: number, start: number, duration: number) =>
   interpolate(frame, [start, start + duration], [0, 1], clamp);
 export function GateWeave({ children }: Layer) {
   const frame = useCurrentFrame();
-  const t = Math.floor((frame * 24) / c.fps) * c.weaveFrequency;
+  const t = frame * c.weaveFrequency;
   const n = (axis: number) => noise2D("gate", t, axis);
   return (
     <AbsoluteFill
@@ -20,7 +27,11 @@ export function GateWeave({ children }: Layer) {
     </AbsoluteFill>
   );
 }
-export function Grain() {
+// `blend`/`opacity` opzionali (FATAL-TITLE su plate vero); di default screen.
+export function Grain({
+  blend = "screen",
+  opacity = c.grain,
+}: { blend?: "screen" | "soft-light" | "overlay"; opacity?: number } = {}) {
   const frame = useCurrentFrame();
   return (
     <svg
@@ -28,8 +39,9 @@ export function Grain() {
       height={height}
       style={{
         position: "absolute",
-        mixBlendMode: "overlay",
-        opacity: c.grain,
+        // Sul nero "overlay" non lascia traccia: "screen" a bassa opacità.
+        mixBlendMode: blend,
+        opacity,
       }}
     >
       <filter id="silver">
@@ -44,15 +56,20 @@ export function Grain() {
     </svg>
   );
 }
-export function Halation({ children }: Layer) {
+// `opacity`/`blur` opzionali (FATAL-TITLE); di default i valori di config.ts.
+export function Halation({
+  children,
+  opacity = HALATION_OPACITY,
+  blur = HALATION_BLUR,
+}: Layer & { opacity?: number; blur?: number }) {
   const id = "halo" + useId().replace(/[^a-z0-9]/gi, "");
   return (
     <>
       <AbsoluteFill
         style={{
-          filter: `blur(${c.haloBlur * SCALE}px)`,
+          filter: `blur(${blur * SCALE}px)`,
           mixBlendMode: "screen",
-          opacity: c.haloOpacity,
+          opacity,
           background: "transparent",
         }}
       >
@@ -66,84 +83,65 @@ export function Halation({ children }: Layer) {
           {children}
         </AbsoluteFill>
       </AbsoluteFill>
-      <AbsoluteFill style={{ filter: `blur(${c.inkBlur * SCALE}px)` }}>
-        {children}
-      </AbsoluteFill>
+      <AbsoluteFill>{children}</AbsoluteFill>
     </>
   );
 }
-export function Condense({
+// Sviluppo ottico in entrata e, al contrario, in uscita. `duration` è la
+// lunghezza del credit in frame (il frame è locale alla Sequence).
+export const developFrames = (duration: number) => {
+  const max = Math.floor(duration * c.developMaxShare);
+  return {
+    in: Math.min(c.developIn, max),
+    out: Math.min(c.developOut, max),
+  };
+};
+// `inFrames`/`outFrames` opzionali (cartelli d'atto) sostituiscono le durate
+// calcolate da developFrames; outFrames = 0 => nessuna uscita.
+export function OpticalDevelop({
   children,
-  direction,
-  start,
   duration,
-}: Layer & { direction: "in" | "out"; start: number; duration: number }) {
-  const f = useCurrentFrame(),
-    id = useId().replace(/[^a-z0-9]/gi, "");
-  const time = ramp(f, start, duration),
-    p = direction === "in" ? time : 1 - time;
-  if (p === 0) return null;
-  if (p === 1) return <>{children}</>;
-  // Amplify luminance around a moving threshold; keep the noise field fixed.
-  return (
-    <svg width={width} height={height}>
-      <defs>
-        <filter id={"noise" + id}>
-          <feTurbulence
-            type="fractalNoise"
-            baseFrequency={0.12 / SCALE}
-            numOctaves="2"
-            seed="17"
-          />
-          <feColorMatrix type="saturate" values="0" />
-          <feComponentTransfer>
-            <feFuncA type="linear" slope="0" intercept="1" />
-            {(["R", "G", "B"] as const).map((channel) => {
-              const Fn = { R: "feFuncR", G: "feFuncG", B: "feFuncB" }[
-                channel
-              ] as "feFuncR";
-              return (
-                <Fn
-                  key={channel}
-                  type="linear"
-                  slope="18"
-                  intercept={19 * p - 18}
-                />
-              );
-            })}
-          </feComponentTransfer>
-        </filter>
-        <mask id={"mask" + id}>
-          <rect width="100%" height="100%" filter={"url(#noise" + id + ")"} />
-        </mask>
-      </defs>
-      <foreignObject
-        width={width}
-        height={height}
-        mask={"url(#mask" + id + ")"}
-      >
-        {children}
-      </foreignObject>
-    </svg>
+  inFrames,
+  outFrames,
+  blurTo = c.inkBlur,
+}: Layer & {
+  duration: number;
+  inFrames?: number;
+  outFrames?: number;
+  blurTo?: number; // blur finale (px a 4K); di default inkBlur
+}) {
+  const f = useCurrentFrame();
+  const auto = developFrames(duration);
+  const d = { in: inFrames ?? auto.in, out: outFrames ?? auto.out };
+  const easing = Easing.bezier(...c.developEasing);
+  const t = Math.min(
+    interpolate(f, [0, d.in], [0, 1], { ...clamp, easing }),
+    d.out > 0
+      ? interpolate(f, [duration - d.out, duration], [1, 0], {
+          ...clamp,
+          easing,
+        })
+      : 1,
   );
-}
-export function OpticalDevelop({ children }: Layer) {
-  const t = interpolate(useCurrentFrame(), [0, c.developFrames], [0, 1], {
-    ...clamp,
-    easing: Easing.bezier(0.35, 0, 0.22, 1),
-  });
   return (
     <AbsoluteFill
       style={{
         opacity: t,
-        filter: `brightness(${0.15 + 0.85 * t}) blur(${(c.developBlur + (c.inkBlur - c.developBlur) * t) * SCALE}px)`,
+        filter: `brightness(${c.developBrightness + (1 - c.developBrightness) * t}) blur(${(c.developBlur + (blurTo - c.developBlur) * t) * SCALE}px)`,
       }}
     >
       {children}
     </AbsoluteFill>
   );
 }
-export function Abrasion({ children }: Layer) {
+// `start` e `max` opzionali (cartelli d'atto): lo spostamento resta 0 fino a
+// `start` e poi sale fino a `max` (px a 4K) a fine durata.
+export function Abrasion({
+  children,
+  duration,
+  start = 0,
+  max = c.abrasion,
+}: Layer & { duration: number; start?: number; max?: number }) {
   const f = useCurrentFrame();
   return (
     <AbsoluteFill>
@@ -158,9 +156,7 @@ export function Abrasion({ children }: Layer) {
           <feDisplacementMap
             in="SourceGraphic"
             in2="paper"
-            scale={
-              c.abrasion * SCALE * ramp(f, 0, c.directorOut - c.directorIn)
-            }
+            scale={max * SCALE * ramp(f, start, duration - start)}
             xChannelSelector="R"
             yChannelSelector="G"
           />

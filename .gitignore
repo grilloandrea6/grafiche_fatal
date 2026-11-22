@@ -5,3 +5,15 @@ dist
 
 # Ignore the output video from Git but not videos you import into src/.
 out
+
+# Exports / renders / large media (keep repo light)
+.consegna4320_tmp/
+consegna/
+consegna_4320/
+matte/
+public/footage/
+*.mov
+*.mp4
+*.mxf
+*.exr
+*.dpx
